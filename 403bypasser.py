@@ -29,7 +29,8 @@ BYPASS_HEADERS = [
     {"Client-IP": "127.0.0.1"},
     {"Host": "localhost"},
     {"X-Forwarded-Host": "127.0.0.1"},
-    {"X-Host": "127.0.0.1"}
+    {"X-Host": "127.0.0.1"},
+    {"X-rewrite-url": "admin/login"}
 ]
 
 HTTP_METHODS = ["GET", "POST", "PUT", "HEAD", "PATCH", "TRACE"]
