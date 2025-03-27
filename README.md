@@ -78,7 +78,7 @@ python3 403bypasser.py <URL> [PATH]
 
 ### Path Fuzzing
 
-The script applies various path manipulation techniques (like `/{}?`, `/*/{}`) to test if the URL can be bypassed. These techniques help identify misconfigurations on web servers, such as hidden directories or files.
+The script applies various path manipulation techniques (like `/path../`, `//path`) to test if the URL can be bypassed. These techniques help identify misconfigurations on web servers, such as hidden directories or files.
 
 ### HTTP Method Testing
 
