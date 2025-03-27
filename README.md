@@ -50,10 +50,10 @@ python3 403bypasser.py <URL> [PATH]
   python3 403bypasser.py https://example.com admin
   ```
 
-- Testing the website without a specific path:
+- Wordlist scanning:
 
   ```bash
-  python3 403bypasser.py https://example.com
+  python3 403bypasser.py https://example.com -w paths.txt -t 30
   ```
 
 ### Additional Options
