@@ -145,10 +145,11 @@ def run_tests(target_url, path, threads=20, verbose=False):
                 success, code, _, _, path = future.result()
                 if success:
                     print_success(target_url, code, "GET", None, path)
+
 def main():
     parser = argparse.ArgumentParser(description='403 Bypass Tool')
     parser.add_argument('url', help='Target URL')
-    parser.add_argument('path', nargs='?', default=None, help='Path to test (default: root path)')
+    parser.add_argument('paths', nargs='?', default=None, help='Paths to test (comma-separated, default: root path)')
     parser.add_argument('-w', '--wordlist', help='Wordlist file containing paths to test')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
     parser.add_argument('-t', '--threads', type=int, default=20, help='Number of threads')
@@ -170,7 +171,15 @@ def main():
                 print(f"\n{colors.BOLD}[*] Testing path: {path}{colors.END}")
             run_tests(target_url, path, args.threads, args.verbose)
     else:
-        run_tests(target_url, args.path, args.threads, args.verbose)
+        if args.paths:
+            # Split paths by comma and strip whitespace
+            paths = [p.strip() for p in args.paths.split(',')]
+            for path in paths:
+                if args.verbose:
+                    print(f"\n{colors.BOLD}[*] Testing path: {path}{colors.END}")
+                run_tests(target_url, path, args.threads, args.verbose)
+        else:
+            run_tests(target_url, None, args.threads, args.verbose)
 
 if __name__ == "__main__":
     main()
