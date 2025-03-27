@@ -24,10 +24,10 @@
    cd 403bypasser
    ```
 
-2. Install the required dependencies (if you don't have `requests` installed):
+2. Install the required dependencies:
 
    ```bash
-   pip install requests
+   pip install -r requirements.txt
    ```
 
 ## Usage
