@@ -30,7 +30,7 @@ BYPASS_HEADERS = [
     {"Host": "localhost"},
     {"X-Forwarded-Host": "127.0.0.1"},
     {"X-Host": "127.0.0.1"},
-    {"X-rewrite-url": "admin/login"}
+    {"X-rewrite-url": "{path}/login"}
 ]
 
 HTTP_METHODS = ["GET", "POST", "PUT", "HEAD", "PATCH", "TRACE"]
@@ -57,15 +57,21 @@ def test_bypass(url, path, headers=None, method="GET", verbose=False):
         final_headers = headers.copy() if headers else {}
         final_headers["User-Agent"] = random_user_agent()
         
-        if "X-Original-URL" in final_headers:
+        # Process headers that might contain {path} placeholder
+        for header_name in final_headers:
+            if isinstance(final_headers[header_name], str) and '{path}' in final_headers[header_name]:
+                final_headers[header_name] = final_headers[header_name].format(path=path if path else '')
+        
+        # Special handling for X-Original-URL and X-Rewrite-URL
+        if "X-Original-URL" in final_headers and not final_headers["X-Original-URL"]:
             final_headers["X-Original-URL"] = effective_path.lstrip('/')
-        if "X-Rewrite-URL" in final_headers:
+        if "X-Rewrite-URL" in final_headers and not final_headers["X-Rewrite-URL"]:
             final_headers["X-Rewrite-URL"] = effective_path.lstrip('/')
         
         if verbose:
             print(f"{colors.BLUE}[*] Testing: {method} {full_url}", end='')
             if headers:
-                print(f" with headers: {headers}", end='')
+                print(f" with headers: {final_headers}", end='')
             print(colors.END)
         
         response = requests.request(
