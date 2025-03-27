@@ -1,7 +1,3 @@
-Claro! Aqui está a versão em inglês com as atualizações que você pediu:
-
----
-
 # 403bypasser
 
 ## Description
