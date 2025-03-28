@@ -2,7 +2,7 @@
 
 ## Description
 
-**403bypasser** is a tool designed to perform **bypass testing** on web pages that return an HTTP **403 Forbidden** status code. Through techniques like **HTTP Method fuzzing**, **HTTP Header fuzzing**, and **Path fuzzing**, it attempts to bypass restrictions set on URLs and identify vulnerabilities in misconfigured systems or security flaws.
+**403bypasser** is a tool designed to perform bypass testing on web pages that return an HTTP 403 Forbidden status code. Through techniques like HTTP Method fuzzing, HTTP Header fuzzing, Changing HTTP protocol version and Path fuzzing, it attempts to bypass restrictions set on URLs and identify vulnerabilities in misconfigured systems or security flaws.
 
 ### Main Features:
 - Tests **HTTP Methods** (GET, POST, PUT, etc.).
@@ -102,3 +102,17 @@ Headers:
   Host: localhost
 --------------------------------------------------
 ```
+
+### Extra (manual) 403 bypass
+Modifying the Host header can bypass virtual host-based restrictions. In a scenario multi-tenant setup restricts access unless a specific host header is used.
+
+Example:
+```bash
+curl -H “Host: dev.example.com” http://example.com/secret/
+
+curl -H “Host: private.example.com” http://example.com/secret/
+```
+
+
+
+
