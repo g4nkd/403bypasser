@@ -31,6 +31,12 @@ def format_url(base_url, path):
     path = path.lstrip('/')
     return f"{base_url}/{path}"
 
+def get_domain(url):
+    """Extrai o domínio da URL (sem protocolo e porta)"""
+    parsed = urlparse(url)
+    domain = parsed.netloc.split(':')[0]
+    return domain
+
 PATH_MANIPULATION_TECHNIQUES = [
     # Basic techniques
     "{0}", "%2e/{0}", "%2f{0}/", "%2f{0}%2f", "./{0}/",
@@ -220,22 +226,26 @@ def test_fuzzing(url, path=None, method="GET", headers=None, verbose=False):
         
         req_headers = {"User-Agent": random_user_agent()}
         if headers:
-            req_headers.update(headers)
+            # Create a copy of headers to avoid modifying the original
+            processed_headers = headers.copy()
             
-            for k, v in req_headers.items():
+            for k, v in processed_headers.items():
                 if v and isinstance(v, str):
+                    # Replace placeholders
                     if "{domain}" in v:
-                        domain = urlparse(url).netloc.split(':')[0]
-                        req_headers[k] = v.replace("{domain}", domain)
+                        domain = get_domain(url)
+                        processed_headers[k] = v.replace("{domain}", domain)
                     if "{target}" in v:
-                        req_headers[k] = v.replace("{target}", url)
+                        processed_headers[k] = v.replace("{target}", url)
                     if "{path}" in v:
-                        req_headers[k] = v.replace("{path}", path.lstrip('/') if path else "")
+                        processed_headers[k] = v.replace("{path}", path.lstrip('/') if path else "")
+            
+            req_headers.update(processed_headers)
         
         if verbose:
             print(f"{colors.BLUE}[*] Testing: {method} {test_url}{colors.END}")
             if headers:
-                print(f"{colors.BLUE}    Headers: {headers}{colors.END}")
+                print(f"{colors.BLUE}    Headers: {processed_headers}{colors.END}")
         
         # Verificação adicional para métodos malformados
         if any(c.isspace() for c in method):
@@ -267,7 +277,7 @@ def test_fuzzing(url, path=None, method="GET", headers=None, verbose=False):
                 raise
         
         if response.status_code == 200:
-            return True, response.status_code, method, headers, path
+            return True, response.status_code, method, processed_headers if headers else None, path
     except Exception as e:
         if verbose:
             print(f"{colors.RED}    Error: {e}{colors.END}")
