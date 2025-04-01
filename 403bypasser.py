@@ -120,14 +120,22 @@ BYPASS_HEADERS = [
     {"X-Custom-IP-Authorization": "127.0.0.1"},
     {"X-Custom-IP-Authorization..;/": "127.0.0.1"}
 ]
+GET :  Status: 000, Length : 0 
+POST :  Status: 000, Length : 0 
+HEAD : Status: 000, Length : 0 
+OPTIONS :  Status: 000, Length : 0 
+PUT :  Status: 000, Length : 0 
+TRACE :  Status: 000, Length : 0 
+PATCH :  Status: 000, Length : 0 
+TRACK :  Status: 000, Length : 0 
+CONNECT :  Status: 000, Length : 0 
+UPDATE :  Status: 000, Length : 0 
+LOCK : 
 
 HTTP_METHODS = [
     "GET", "POST", "PUT", "HEAD", "PATCH", "TRACE",
-    "OPTIONS", "CONNECT", "DEBUG",
-    "CHECKOUT", "COPY", "LOCK", "UNLOCK", "PROPFIND",
-    "SEARCH", "PROPPATCH", "MKCOL", "MOVE", "TRACK",
-    "UPDATE",
-    "GWT"
+    "OPTIONS", "CONNECT", "DEBUG","CHECKOUT", "COPY", 
+    "LOCK", "UNLOCK", "SEARCH","MOVE", "TRACK", "UPDATE"
 ]
 
 PARAMETER_TECHNIQUES = [
