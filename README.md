@@ -104,7 +104,7 @@ Headers:
 ```
 
 ### Extra (manual) 403 bypass
-Modifying the Host header can bypass virtual host-based restrictions. In a scenario multi-tenant setup restricts access unless a specific host header is used.
+Modifying the Host header can bypass virtual host-based restrictions. A subdomain found can be used for the parameter to achieve the bypass.
 
 Example:
 ```bash
