@@ -7,6 +7,7 @@
 ### Main Features:
 - Tests **HTTP Methods** (GET, POST, PUT, etc.).
 - Tests **HTTP Headers** with common values used in bypass attacks.
+- Tests **URL Normalization**
 - **Path Fuzzing** to explore variations of paths that might bypass restrictions.
 - Ability to test multiple methods and headers in parallel using multiple **threads**.
 
