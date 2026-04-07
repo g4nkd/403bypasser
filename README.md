@@ -74,4 +74,8 @@ python3 403bypasser.py <URL> [PATH]
   ```bash
   python3 403bypasser.py https://example.com admin -t 50
   ```
+  
+### Demo
+
+<img width="2410" height="1310" alt="image" src="https://github.com/user-attachments/assets/05acaa13-5f9c-4696-b836-21c92a81cc36" />
 
