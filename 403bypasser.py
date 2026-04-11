@@ -72,7 +72,7 @@ def safe_request(method, url, headers=None, timeout=5, max_retries=1, verbose=Fa
                 url,
                 headers=headers,
                 timeout=timeout,
-                allow_redirects=False,
+                allow_redirects=True,
                 verify=False,
             )
             if r.status_code in (429, 503) and attempt < max_retries:
