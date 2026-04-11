@@ -4,13 +4,6 @@
 
 **403bypasser** is a tool designed to perform bypass testing on web pages that return an HTTP 403 Forbidden status code. Through techniques like HTTP Method fuzzing, HTTP Header fuzzing, Changing HTTP protocol version and Path fuzzing, it attempts to bypass restrictions set on URLs and identify vulnerabilities in misconfigured systems or security flaws.
 
-### Main Features:
-- Tests **HTTP Methods** (GET, POST, PUT, etc.).
-- Tests **HTTP Headers** with common values used in bypass attacks.
-- Tests **URL Normalization**
-- **Path Fuzzing** to explore variations of paths that might bypass restrictions.
-- Ability to test multiple methods and headers in parallel using multiple **threads**.
-
 ## Requirements
 
 - Python 3.6 or later
