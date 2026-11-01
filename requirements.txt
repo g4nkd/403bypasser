@@ -1,5 +1,2 @@
 requests
-sys
-argparse
-random
-string
+urllib3
