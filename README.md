@@ -1,37 +1,49 @@
-# 403bypasser v2.0
+# 403bypasser v3.0
 
 ## Description
 
-**403bypasser** is an advanced tool for bypass testing on web pages that return HTTP 403 Forbidden or 401 Unauthorized. It runs **16 test phases** covering techniques from real bug bounty writeups, HackTricks, and top bypass tools (nomore403, byp4xx, 400ok).
+**403bypasser** is an intelligent tool for bypass testing on web pages that return HTTP 403 Forbidden or 401 Unauthorized. It runs **14 priority-ordered test phases** with server fingerprinting, response body analysis, and confidence scoring to minimize false positives.
+
+### What changed in v3.0
+
+| Feature | v2.0 | v3.0 |
+|---------|------|------|
+| False positives | Hash + 404 baseline only | Root baseline + body analysis + login detection + title check |
+| IP spoofing | 576 combos (mostly noise) | 15 high-value combos, auto-skipped behind CDN |
+| Server awareness | None | Fingerprints server/WAF/CDN, skips irrelevant techniques |
+| Confidence | Binary yes/no | 0-100% score with HIGH/GOOD/MEDIUM/LOW labels |
+| Rate limiting | Basic 429 retry | Adaptive exponential backoff, auto-skip on block |
+| Thread safety | None (race conditions) | Locks on all shared state |
+| Path mutations | 137 unsorted | 77 priority-ordered (HIGH/MEDIUM/LOW) |
 
 ### What it tests
 
 | Phase | Technique | Details |
 |-------|-----------|---------|
-| 1 | **Baseline** | Captures normal response + 404 baseline for false-positive filtering |
+| 1 | **Baseline** | Captures target + root + 404 baselines for FP filtering |
 | 2 | **Protocol switch** | HTTP ↔ HTTPS |
-| 3 | **HTTP/0.9** | Raw socket, no HTTP version header |
-| 4 | **HTTP/1.0 downgrade** | Some ACLs only apply to HTTP/1.1 |
-| 5 | **Root header override** | X-Original-URL, X-Rewrite-URL, X-Override-URL, X-Forwarded-Path |
-| 6 | **HTTP methods** | 25 methods: GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS/TRACE/CONNECT + WebDAV (PROPFIND/MKCOL/MOVE/COPY/LOCK/UNLOCK) + made-up verbs |
-| 7 | **Verb case variants** | get, Get, gEt, GEt, post, Post, etc. |
-| 8 | **Method override** | X-HTTP-Method-Override / X-HTTP-Method / X-Method-Override with POST/PUT/PATCH |
-| 9 | **Method with body** | POST/PUT/PATCH with JSON, XML, form-data bodies |
-| 10 | **IP spoofing headers** | 23 headers × 24 IP values = 552 combos (127.0.0.1, ::1, 0.0.0.0, internal ranges, octal/hex/decimal encoding) |
-| 11 | **Header bypass** | 60+ misc bypass headers (scheme, port, host, content-type, auth, cache, WAF evasion) |
-| 12 | **Header combos** | Multi-header combinations that work together |
-| 13 | **User-Agent bypass** | Googlebot, Bingbot, curl, wget, empty UA |
-| 14 | **Host header bypass** | localhost, 127.0.0.1, ::1, trailing dot FQDN, port variants, uppercase |
-| 15 | **WAF bypass** | Large header padding, cache busters, tab-separated paths |
-| 16 | **Path/encoding/case** | 100+ path mutations, char-by-char encoding, double/triple encoding, case variations, Unicode fullwidth, null bytes, semicolons |
+| 3 | **Root header override** | X-Original-URL, X-Rewrite-URL, X-Override-URL (compared against root baseline) |
+| 4 | **HTTP methods** | 17 methods: GET/POST/PUT/PATCH/DELETE + WebDAV + DEBUG/TRACK |
+| 5 | **Verb case variants** | get, Get, gEt, post, Post, etc. |
+| 6 | **Method override** | X-HTTP-Method-Override with POST/PUT/PATCH |
+| 7 | **Method with body** | POST/PUT/PATCH with JSON, form, XML bodies |
+| 8 | **Header bypass** | 28 high-value bypass headers |
+| 9 | **Header combos** | Multi-header combinations |
+| 10 | **IP spoofing** | 15 high-value combos (auto-skipped behind Cloudflare/Akamai) |
+| 11 | **Host header** | localhost, 127.0.0.1, FQDN dot, port variants |
+| 12 | **User-Agent** | Googlebot, Bingbot, curl, empty UA |
+| 13 | **WAF bypass** | Large header padding, cache busters |
+| 14 | **Path / encoding** | 77 priority-ordered mutations, case variants, char encoding |
 
 ### Key features
 
-- **False-positive filtering**: 404 baseline detection prevents custom error pages from showing as bypasses
-- **Curl reproduction commands**: Every finding includes a ready-to-paste curl command
-- **Phase skipping**: Skip slow/noisy phases with `--skip`
-- **Threaded execution**: Parallel testing with configurable thread count
-- **JSON output**: Machine-readable results for integration with other tools
+- **Server fingerprinting**: Detects nginx/Apache/Tomcat/IIS/Spring/Cloudflare/Akamai and skips irrelevant techniques
+- **Body analysis**: Detects login pages, error pages, and generic placeholders returned as 200
+- **Confidence scoring**: 0-100% confidence with visual bar for each finding
+- **Root baseline**: Prevents false positives from root header override tests
+- **Adaptive rate limiting**: Exponential backoff with automatic phase skipping on block
+- **Thread safety**: All shared state protected with locks
+- **Curl reproduction**: Every finding includes a ready-to-paste curl command
 
 ## Requirements
 
@@ -84,14 +96,22 @@ python3 403bypasser.py https://example.com admin -o results.json
 # Skip IP spoofing and WAF bypass (fastest scan)
 python3 403bypasser.py https://example.com admin --skip ip-spoof,waf
 
-# Skip heavy phases for quick check
-python3 403bypasser.py https://example.com admin --skip ip-spoof,waf,path-encode,verb-case
+# Quick check — only high-value phases
+python3 403bypasser.py https://example.com admin --skip ip-spoof,waf,path-encode,verb-case,ua
 ```
 
-### Verbose mode
+### Disable fingerprinting
 
 ```bash
-python3 403bypasser.py https://example.com admin -v
+# Run all techniques regardless of server detection
+python3 403bypasser.py https://example.com admin --no-fingerprint
+```
+
+### Minimum confidence filter
+
+```bash
+# Only show high-confidence findings
+python3 403bypasser.py https://example.com admin --min-confidence 70
 ```
 
 ### Available skip phases
@@ -113,6 +133,18 @@ python3 403bypasser.py https://example.com admin -v
 | `host` | Host header bypass |
 | `waf` | WAF bypass |
 | `path-encode` | Path/encoding/case |
+
+## Confidence scoring
+
+Each finding gets a 0-100% confidence score:
+
+| Score | Label | Meaning |
+|-------|-------|---------|
+| 90-100% | HIGH | Response references target path content |
+| 70-89% | GOOD | Substantial structured content |
+| 50-69% | MEDIUM | Has content, needs manual verification |
+| 40-49% | LOW | Minimal content |
+| <40% | NOISE | Filtered out by default |
 
 ## Techniques sourced from
 
